@@ -32,7 +32,8 @@ class AssistantManager:
             name="TACS Assistant",
             instructions="""Eres un asistente amable y servicial que ayuda a los alumnos en la cursada de TACS materia de programación de la facultad UTN de Buenos Aires.
             Proporciona respuestas concisas y útiles, manteniendo un tono conversacional.""",
-            model="gpt-4o-mini",extra_headers=headers
+            model="gpt-4o-mini",
+            extra_headers=headers
         )
         print(f"Asistente creado: {assistant.id}")
         return assistant.id
@@ -40,7 +41,7 @@ class AssistantManager:
     def get_or_create_thread(self, chat_id: int) -> str:
         """Obtiene o crea un nuevo hilo para el chat"""
         if chat_id not in threads:
-            thread = self.client.beta.threads.create()
+            thread = self.client.beta.threads.create(extra_headers=headers)
             threads[chat_id] = thread.id
         return threads[chat_id]
 
@@ -53,20 +54,23 @@ class AssistantManager:
             self.client.beta.threads.messages.create(
                 thread_id=thread_id,
                 role="user",
-                content=message
+                content=message,
+                extra_headers=headers
             )
 
             # Ejecutar el asistente
             run = self.client.beta.threads.runs.create(
                 thread_id=thread_id,
-                assistant_id=self.assistant_id
+                assistant_id=self.assistant_id,
+                extra_headers=headers
             )
 
             # Esperar la respuesta
             while True:
                 run_status = self.client.beta.threads.runs.retrieve(
                     thread_id=thread_id,
-                    run_id=run.id
+                    run_id=run.id,
+                    extra_headers=headers
                 )
                 if run_status.status == 'completed':
                     break
@@ -76,7 +80,8 @@ class AssistantManager:
 
             # Obtener los mensajes
             messages = self.client.beta.threads.messages.list(
-                thread_id=thread_id
+                thread_id=thread_id,
+                extra_headers=headers
             )
 
             # Retornar el último mensaje del asistente
@@ -95,7 +100,7 @@ class AssistantManager:
         if chat_id in threads:
             try:
                 # Crear un nuevo hilo
-                thread = self.client.beta.threads.create()
+                thread = self.client.beta.threads.create(extra_headers=headers)
                 threads[chat_id] = thread.id
                 return True
             except Exception as e:
