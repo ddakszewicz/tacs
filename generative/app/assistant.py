@@ -118,7 +118,7 @@ class AssistantManager:
                 assistant_id=self.assistant_id,
                 extra_headers=headers,
                 additional_instructions="\n".join(func["instructions"] for func in functions.values()),
-                tools=[{"type": "function", "function": func["declaration"]} for func in functions.values()]
+                tools=[{"type":"file_search"}]+[{"type": "function", "function": func["declaration"]} for func in functions.values()]
             )
 
             # Esperar la respuesta
@@ -171,7 +171,8 @@ class AssistantManager:
             # Retornar el último mensaje del asistente
             for msg in messages.data:
                 if msg.role == "assistant":
-                    return msg.content[0].text.value
+                    result= "\n".join(content.text["value"] if isinstance(content.text,dict) else content.text.value  for content in msg.content if content.type == "text" and content.text)
+                    return result
 
             return "No se pudo obtener una respuesta."
 
