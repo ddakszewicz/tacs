@@ -1,6 +1,7 @@
+import json
 import os
 import time
-from typing import Optional
+from typing import Optional, reveal_type
 
 import telebot
 from dotenv import load_dotenv
@@ -23,6 +24,57 @@ threads = {}
 headers = {
     "OpenAI-Beta": "assistants=v2",
 }
+
+
+def get_report(arguments: dict):
+    try:
+        output=database.query(arguments["query"])
+        return str(output) if output   else "Error al ejecutar la consulta"
+    except Exception as e:
+        return "Error al ejecutar la consulta: " + str(e)
+
+
+
+functions = {
+    "get_reports_from_query": {
+        "instructions": """When you call get_reports_from_query consider the following schema to create proper queries:
+            -- tabla de alumnos
+            CREATE TABLE alumnos (
+                                     id INT PRIMARY KEY AUTO_INCREMENT,
+                                     nombre VARCHAR(50),
+                                     apellido VARCHAR(50),
+                                     legajo VARCHAR(5)
+            );
+            
+            -- tabla de cursadas
+            CREATE TABLE cursadas (
+                                      id INT PRIMARY KEY AUTO_INCREMENT,
+                                      alumno_id INT,
+                                      cuatrimestre INT,
+                                      anio INT,
+                                      nota INT,
+                                      FOREIGN KEY (alumno_id) REFERENCES alumnos(id)
+            );
+""",
+        "declaration": {
+            "name": "get_reports_from_query",
+            "description": "Gets a report from an sql query",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The expected query to execute. e.g. SELECT * FROM alumnos. Please join the tables if is necessary adding aliases to tables. Made assumptions that you need and always try to run the query",
+                    }
+                },
+                "required": ["query"],
+            },
+        },
+        "execute": get_report
+    }
+}
+
+
 class AssistantManager:
     def __init__(self):
         self.client = client
@@ -64,7 +116,9 @@ class AssistantManager:
             run = self.client.beta.threads.runs.create(
                 thread_id=thread_id,
                 assistant_id=self.assistant_id,
-                extra_headers=headers
+                extra_headers=headers,
+                additional_instructions="\n".join(func["instructions"] for func in functions.values()),
+                tools=[{"type": "function", "function": func["declaration"]} for func in functions.values()]
             )
 
             # Esperar la respuesta
@@ -78,6 +132,34 @@ class AssistantManager:
                     break
                 elif run_status.status == 'failed':
                     return "Lo siento, hubo un error al procesar tu mensaje."
+                elif run_status.status == 'requires_action':
+                    # Define the list to store tool outputs
+                    tool_outputs = []
+                    # Loop through each tool in the required action section
+                    for tool in run_status.required_action.submit_tool_outputs.tool_calls:
+                        print(f"Function: {tool.function.name} | Arguments: {tool.function.arguments}")
+                        function = functions[tool.function.name]
+                        if function:
+                            output = function["execute"](json.loads(tool.function.arguments))
+                            tool_outputs.append({
+                                "tool_call_id": tool.id,
+                                "output": output
+                            })
+                        else:
+                            tool_outputs.append({
+                                "tool_call_id": tool.id,
+                                "output": "Function not found"
+                            })
+                    try:
+                        run = client.beta.threads.runs.submit_tool_outputs(
+                            thread_id=thread_id,
+                            run_id=run_status.id,
+                            tool_outputs=tool_outputs
+                        )
+                        print("Tool outputs submitted successfully.")
+                    except Exception as e:
+                        print("Failed to submit tool outputs:", e)
+
                 time.sleep(1)
 
             # Obtener los mensajes
@@ -110,8 +192,10 @@ class AssistantManager:
                 return False
         return True
 
+
 # Inicializar el gestor del asistente
 assistant_manager = AssistantManager()
+
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -126,6 +210,7 @@ def send_welcome(message):
     """
     bot.reply_to(message, welcome_message)
 
+
 @bot.message_handler(commands=['clear'])
 def clear_conversation(message):
     """Inicia una nueva conversación"""
@@ -133,6 +218,7 @@ def clear_conversation(message):
         bot.reply_to(message, "¡Conversación reiniciada! ¿En qué puedo ayudarte?")
     else:
         bot.reply_to(message, "Hubo un error al reiniciar la conversación. Por favor, intenta de nuevo.")
+
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -153,6 +239,7 @@ def handle_message(message):
         bot.reply_to(message, response)
     print(f"Usuario: {message.text} | Asistente: {response}")
 
+
 def main():
     print("Bot iniciado con OpenAI Assistants API...")
     print(f"DB health {database.healthcheck()}")
@@ -162,6 +249,7 @@ def main():
         except Exception as e:
             print(f"Error en el bot: {e}")
             time.sleep(15)
+
 
 if __name__ == "__main__":
     main()

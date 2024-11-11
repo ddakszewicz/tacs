@@ -53,4 +53,4 @@ def query(query):
 
 def healthcheck():
     query("SELECT 1")
-    return "OK";
+    return "FAILED" if query("SELECT 1") is None else "OK";
