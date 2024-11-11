@@ -1,10 +1,12 @@
 import os
-from dotenv import load_dotenv
-import telebot
-from openai import OpenAI
 import time
 from typing import Optional
-import json
+
+import telebot
+from dotenv import load_dotenv
+from openai import OpenAI
+
+import database
 
 # Cargar variables de entorno
 load_dotenv()
@@ -149,9 +151,11 @@ def handle_message(message):
             bot.reply_to(message, response[x:x + 4096])
     else:
         bot.reply_to(message, response)
+    print(f"Usuario: {message.text} | Asistente: {response}")
 
 def main():
     print("Bot iniciado con OpenAI Assistants API...")
+    print(f"DB health {database.healthcheck()}")
     while True:
         try:
             bot.polling(none_stop=True)

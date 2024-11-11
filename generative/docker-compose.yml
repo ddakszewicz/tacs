@@ -13,10 +13,15 @@ services:
     ports:
       - "3306:3306"
     volumes:
-      - .dump.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./dump.sql:/docker-entrypoint-initdb.d/init.sql
       - mysql_data:/var/lib/mysql
     networks:
       - app-network
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
 
   telegram_app:
     build:
@@ -25,7 +30,8 @@ services:
     container_name: telegram_app
     restart: always
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       MYSQL_HOST: db
       MYSQL_DATABASE: ${MYSQL_DATABASE}
