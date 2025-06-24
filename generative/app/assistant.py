@@ -62,19 +62,17 @@ def get_report(query: str) -> str:
 TOOLS = [
     {
         "type": "function",
-        "function": {
-            "name": "get_reports_from_query",
-            "description": "Ejecuta una consulta SQL en la base de datos de alumnos y cursadas",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "La consulta SQL a ejecutar. Ej: SELECT * FROM alumnos. Usar aliases para las tablas en JOINs."
-                    }
-                },
-                "required": ["query"]
-            }
+        "name": "get_reports_from_query",
+        "description": "Ejecuta una consulta SQL en la base de datos de alumnos y cursadas",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "La consulta SQL a ejecutar. Ej: SELECT * FROM alumnos. Usar aliases para las tablas en JOINs."
+                }
+            },
+            "required": ["query"]
         }
     }
 ]
@@ -107,10 +105,8 @@ class ResponsesManager:
             payload = {
                 "model": "gpt-4o-mini",
                 "input": [{"role": "user", "content": message}],
+                "instructions":SYSTEM_PROMPT,
                 "tools": TOOLS,
-                "tool_choice": "auto",
-                "temperature": 0.7,
-                "max_completion_tokens": 1500,
                 "store": True  # Importante: permite que OpenAI almacene la conversación
             }
 
@@ -120,9 +116,6 @@ class ResponsesManager:
             if last_response_id:
                 # Continuar conversación existente
                 payload["previous_response_id"] = last_response_id
-            else:
-                # Nueva conversación: agregar el prompt del sistema
-                payload["messages"].insert(0, {"role": "system", "content": SYSTEM_PROMPT})
 
             # Realizar la llamada a la Responses API
             response = self.client.responses.create(**payload)
@@ -131,23 +124,25 @@ class ResponsesManager:
             self.store_response_id(chat_id, response.id)
 
             # Verificar si hay llamadas a funciones que requieren procesamiento
-            if response.message.tool_calls:
-                # Procesar tool calls
-                tool_outputs = []
-                for tool_call in response.message.tool_calls:
-                    function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
 
+            tool_outputs = []
+            for output in response.output:
+                # Procesar tool calls
+                if (output.type =="function_call"):
+                    tool_call=output
+                    function_name = tool_call.name
+                    function_args = json.loads(tool_call.arguments)
                     print(f"Ejecutando función: {function_name} con argumentos: {function_args}")
 
                     # Ejecutar la función
                     function_result = self.execute_function_call(function_name, function_args)
 
                     tool_outputs.append({
-                        "tool_call_id": tool_call.id,
+                        "tool_call_id": tool_call.call_id,
                         "output": function_result
                     })
 
+            if tool_outputs:
                 # Continuar la conversación con los resultados de las tool calls
                 follow_up_payload = {
                     "model": "gpt-4o-mini",
@@ -160,8 +155,6 @@ class ResponsesManager:
                     ],
                     "previous_response_id": response.id,
                     "store": True,
-                    "temperature": 0.7,
-                    "max_completion_tokens": 1500
                 }
 
                 # Obtener la respuesta final
@@ -170,37 +163,13 @@ class ResponsesManager:
                 # Actualizar el response_id
                 self.store_response_id(chat_id, final_response.id)
 
-                return final_response.message.content
+                return final_response.output_text
             else:
-                # Respuesta simple sin tool calls
-                return response.message.content
+               return response.output_text
+
 
         except Exception as e:
             print(f"Error en ResponsesManager: {str(e)}")
-            # Fallback: intentar sin previous_response_id en caso de error
-            if "previous_response_id" in locals():
-                try:
-                    # Reintentar sin previous_response_id
-                    fallback_payload = {
-                        "model": "gpt-4o-mini",
-                        "messages": [
-                            {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": message}
-                        ],
-                        "tools": TOOLS,
-                        "tool_choice": "auto",
-                        "temperature": 0.7,
-                        "max_completion_tokens": 1500,
-                        "store": True
-                    }
-
-                    fallback_response = self.client.responses.create(**fallback_payload)
-                    self.store_response_id(chat_id, fallback_response.id)
-                    return fallback_response.message.content
-
-                except Exception as fallback_error:
-                    print(f"Error en fallback: {str(fallback_error)}")
-
             return "Ocurrió un error al procesar tu mensaje. Por favor, intenta de nuevo."
 
     def clear_conversation(self, chat_id: int):
