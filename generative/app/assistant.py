@@ -151,11 +151,11 @@ class ResponsesManager:
                 # Continuar la conversación con los resultados de las tool calls
                 follow_up_payload = {
                     "model": "gpt-4o-mini",
-                    "messages": [
+                    "input": [
                         {
-                            "role": "tool",
-                            "tool_call_id": output["tool_call_id"],
-                            "content": output["output"]
+                            "type": "function_call_output",
+                            "call_id": output["tool_call_id"],
+                            "output": output["output"]
                         } for output in tool_outputs
                     ],
                     "previous_response_id": response.id,
