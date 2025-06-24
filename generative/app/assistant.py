@@ -48,6 +48,7 @@ CREATE TABLE cursadas (
 Cuando necesites consultar información de la base de datos, utiliza la función get_reports_from_query con una consulta SQL apropiada.
 Siempre usa aliases para las tablas cuando hagas JOINs y asume información razonable si es necesario."""
 
+VECTOR_STORE="vs_JKz7Tha2MacqyIQD9WQQ9RAM"
 
 def get_report(query: str) -> str:
     """Ejecuta una consulta SQL y devuelve los resultados"""
@@ -74,6 +75,10 @@ TOOLS = [
             },
             "required": ["query"]
         }
+    },
+    {
+        "type": "file_search",
+        "vector_store_ids": [VECTOR_STORE]
     }
 ]
 
