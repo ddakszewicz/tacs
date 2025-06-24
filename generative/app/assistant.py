@@ -1,7 +1,7 @@
 import json
 import os
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 
 import telebot
 from dotenv import load_dotenv
@@ -18,8 +18,8 @@ OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Diccionario para almacenar las conversaciones
-conversations = {}
+# Diccionario para almacenar los response_ids de cada conversación
+conversation_responses = {}
 
 # Configuración del sistema
 SYSTEM_PROMPT = """Eres un asistente amable y servicial que ayuda a los alumnos en la cursada de TACS materia de programación de la facultad UTN de Buenos Aires.
@@ -58,7 +58,7 @@ def get_report(query: str) -> str:
         return f"Error al ejecutar la consulta: {str(e)}"
 
 
-# Definición de herramientas para la Response API
+# Definición de herramientas para la Responses API
 TOOLS = [
     {
         "type": "function",
@@ -80,28 +80,17 @@ TOOLS = [
 ]
 
 
-class ChatManager:
+class ResponsesManager:
     def __init__(self):
         self.client = client
-        self.max_history = 20  # Limitar el historial para evitar tokens excesivos
 
-    def get_conversation_history(self, chat_id: int) -> List[Dict[str, Any]]:
-        """Obtiene el historial de conversación para un chat"""
-        if chat_id not in conversations:
-            conversations[chat_id] = []
-        return conversations[chat_id]
+    def get_last_response_id(self, chat_id: int) -> Optional[str]:
+        """Obtiene el último response_id para un chat"""
+        return conversation_responses.get(chat_id)
 
-    def add_message(self, chat_id: int, role: str, content: str):
-        """Agrega un mensaje al historial de conversación"""
-        history = self.get_conversation_history(chat_id)
-        history.append({"role": role, "content": content})
-
-        # Mantener solo los últimos mensajes para evitar exceso de tokens
-        if len(history) > self.max_history:
-            # Mantener el mensaje del sistema y los últimos mensajes
-            system_messages = [msg for msg in history if msg["role"] == "system"]
-            recent_messages = history[-self.max_history:]
-            conversations[chat_id] = system_messages + recent_messages
+    def store_response_id(self, chat_id: int, response_id: str):
+        """Almacena el response_id para un chat"""
+        conversation_responses[chat_id] = response_id
 
     def execute_function_call(self, function_name: str, arguments: Dict[str, Any]) -> str:
         """Ejecuta una llamada a función"""
@@ -112,39 +101,40 @@ class ChatManager:
             return f"Función '{function_name}' no encontrada"
 
     def send_message(self, chat_id: int, message: str) -> Optional[str]:
-        """Envía un mensaje y obtiene la respuesta del modelo"""
+        """Envía un mensaje usando la Responses API con response_id"""
         try:
-            # Obtener historial de conversación
-            history = self.get_conversation_history(chat_id)
+            # Preparar el payload base
+            payload = {
+                "model": "gpt-4o-mini",
+                "input": [{"role": "user", "content": message}],
+                "tools": TOOLS,
+                "tool_choice": "auto",
+                "temperature": 0.7,
+                "max_completion_tokens": 1500,
+                "store": True  # Importante: permite que OpenAI almacene la conversación
+            }
 
-            # Si es la primera conversación, agregar el prompt del sistema
-            if not history:
-                self.add_message(chat_id, "system", SYSTEM_PROMPT)
-                history = self.get_conversation_history(chat_id)
+            # Obtener el último response_id si existe
+            last_response_id = self.get_last_response_id(chat_id)
 
-            # Agregar el mensaje del usuario
-            self.add_message(chat_id, "user", message)
-            history = self.get_conversation_history(chat_id)
+            if last_response_id:
+                # Continuar conversación existente
+                payload["previous_response_id"] = last_response_id
+            else:
+                # Nueva conversación: agregar el prompt del sistema
+                payload["messages"].insert(0, {"role": "system", "content": SYSTEM_PROMPT})
 
-            # Realizar la llamada a la API
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=history,
-                tools=TOOLS,
-                tool_choice="auto",
-                temperature=0.7,
-                max_tokens=1500
-            )
+            # Realizar la llamada a la Responses API
+            response = self.client.responses.create(**payload)
 
-            assistant_message = response.choices[0].message
+            # Almacenar el nuevo response_id
+            self.store_response_id(chat_id, response.id)
 
-            # Verificar si hay llamadas a funciones
-            if assistant_message.tool_calls:
-                # Agregar el mensaje del asistente con las tool calls
-                self.add_message(chat_id, "assistant", assistant_message.content or "")
-
-                # Procesar cada tool call
-                for tool_call in assistant_message.tool_calls:
+            # Verificar si hay llamadas a funciones que requieren procesamiento
+            if response.message.tool_calls:
+                # Procesar tool calls
+                tool_outputs = []
+                for tool_call in response.message.tool_calls:
                     function_name = tool_call.function.name
                     function_args = json.loads(tool_call.function.arguments)
 
@@ -153,40 +143,75 @@ class ChatManager:
                     # Ejecutar la función
                     function_result = self.execute_function_call(function_name, function_args)
 
-                    # Agregar el resultado de la función al historial
-                    self.add_message(chat_id, "tool", function_result)
+                    tool_outputs.append({
+                        "tool_call_id": tool_call.id,
+                        "output": function_result
+                    })
 
-                # Obtener la respuesta final después de las tool calls
-                updated_history = self.get_conversation_history(chat_id)
-                final_response = self.client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=updated_history,
-                    temperature=0.7,
-                    max_tokens=1500
-                )
+                # Continuar la conversación con los resultados de las tool calls
+                follow_up_payload = {
+                    "model": "gpt-4o-mini",
+                    "messages": [
+                        {
+                            "role": "tool",
+                            "tool_call_id": output["tool_call_id"],
+                            "content": output["output"]
+                        } for output in tool_outputs
+                    ],
+                    "previous_response_id": response.id,
+                    "store": True,
+                    "temperature": 0.7,
+                    "max_completion_tokens": 1500
+                }
 
-                final_message = final_response.choices[0].message.content
-                self.add_message(chat_id, "assistant", final_message)
-                return final_message
+                # Obtener la respuesta final
+                final_response = self.client.responses.create(**follow_up_payload)
+
+                # Actualizar el response_id
+                self.store_response_id(chat_id, final_response.id)
+
+                return final_response.message.content
             else:
                 # Respuesta simple sin tool calls
-                response_content = assistant_message.content
-                self.add_message(chat_id, "assistant", response_content)
-                return response_content
+                return response.message.content
 
         except Exception as e:
-            print(f"Error en ChatManager: {str(e)}")
+            print(f"Error en ResponsesManager: {str(e)}")
+            # Fallback: intentar sin previous_response_id en caso de error
+            if "previous_response_id" in locals():
+                try:
+                    # Reintentar sin previous_response_id
+                    fallback_payload = {
+                        "model": "gpt-4o-mini",
+                        "messages": [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": message}
+                        ],
+                        "tools": TOOLS,
+                        "tool_choice": "auto",
+                        "temperature": 0.7,
+                        "max_completion_tokens": 1500,
+                        "store": True
+                    }
+
+                    fallback_response = self.client.responses.create(**fallback_payload)
+                    self.store_response_id(chat_id, fallback_response.id)
+                    return fallback_response.message.content
+
+                except Exception as fallback_error:
+                    print(f"Error en fallback: {str(fallback_error)}")
+
             return "Ocurrió un error al procesar tu mensaje. Por favor, intenta de nuevo."
 
     def clear_conversation(self, chat_id: int):
-        """Limpia el historial de conversación"""
-        if chat_id in conversations:
-            conversations[chat_id] = []
+        """Limpia la conversación eliminando el response_id almacenado"""
+        if chat_id in conversation_responses:
+            del conversation_responses[chat_id]
         return True
 
 
-# Inicializar el gestor de chat
-chat_manager = ChatManager()
+# Inicializar el gestor de respuestas
+responses_manager = ResponsesManager()
 
 
 @bot.message_handler(commands=['start'])
@@ -229,10 +254,22 @@ Comandos:
 @bot.message_handler(commands=['clear'])
 def clear_conversation(message):
     """Inicia una nueva conversación"""
-    if chat_manager.clear_conversation(message.chat.id):
+    if responses_manager.clear_conversation(message.chat.id):
         bot.reply_to(message, "¡Conversación reiniciada! ¿En qué puedo ayudarte?")
     else:
         bot.reply_to(message, "Hubo un error al reiniciar la conversación. Por favor, intenta de nuevo.")
+
+
+@bot.message_handler(commands=['debug'])
+def debug_conversation(message):
+    """Comando de debug para mostrar el response_id actual"""
+    chat_id = message.chat.id
+    response_id = responses_manager.get_last_response_id(chat_id)
+
+    if response_id:
+        bot.reply_to(message, f"Response ID actual: {response_id}")
+    else:
+        bot.reply_to(message, "No hay conversación activa.")
 
 
 @bot.message_handler(func=lambda message: True)
@@ -245,7 +282,7 @@ def handle_message(message):
     bot.send_chat_action(chat_id, 'typing')
 
     # Obtener respuesta del asistente
-    response = chat_manager.send_message(chat_id, user_message)
+    response = responses_manager.send_message(chat_id, user_message)
 
     if response:
         # Enviar la respuesta en fragmentos si es muy larga
@@ -261,7 +298,7 @@ def handle_message(message):
 
 
 def main():
-    print("Bot iniciado con OpenAI Chat Completions API...")
+    print("Bot iniciado con OpenAI Responses API...")
     print(f"DB health: {database.healthcheck()}")
 
     while True:
